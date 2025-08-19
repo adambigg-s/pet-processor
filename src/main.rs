@@ -1,13 +1,14 @@
+mod assembler;
 mod cpu;
 mod memory;
 
 use std::fmt::Debug;
 
+use assembler::ProgramAssembler;
 use cpu::Clock;
 use cpu::Instruction;
 use cpu::Processor;
 use cpu::processor_run;
-use memory::Addressable;
 use memory::MemoryBlock;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -31,7 +32,12 @@ fn main() {
     let mut clock = Clock::default();
     let mut ram = MemoryBlock::<RAM_SIZE, Data>::default();
 
-    *ram.write(0_u8) = Instruction::Null.into();
+    let mut assembler = ProgramAssembler::build(&mut ram);
+    assembler.assemble_program(vec![
+        vec![Instruction::Null.into()],
+        vec![Instruction::Null.into()],
+        vec![Instruction::Null.into()],
+    ]);
 
     processor_run(&mut processor, &mut ram, &mut clock);
 
