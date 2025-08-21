@@ -1,5 +1,5 @@
 #[repr(u8)]
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum Instruction {
     #[default]
@@ -22,6 +22,23 @@ pub enum Instruction {
     DebugRead,
     DebugDumpReg,
     EnumLength,
+}
+
+impl Instruction {
+    pub fn operand_count(&self) -> usize {
+        match self {
+            | Instruction::Halt | Instruction::Null | Instruction::DebugDumpReg | Instruction::DebugRead => 0,
+            | Instruction::Jump
+            | Instruction::JumpIf
+            | Instruction::Push
+            | Instruction::Pop
+            | Instruction::Increment
+            | Instruction::Decrement => 1,
+            | Instruction::LoadImm | Instruction::LoadMem | Instruction::Copy | Instruction::Compare => 2,
+            | Instruction::Add | Instruction::Sub | Instruction::Mul | Instruction::Div => 3,
+            | _ => panic!("this can only be explained by corrupted bytes\ndecoded value: {self:?}"),
+        }
+    }
 }
 
 impl From<u8> for Instruction {
@@ -53,6 +70,33 @@ pub mod arithmetic {
     pub fn sub(x: u8, mut y: u8) -> u8 {
         y = add(!y, 1);
         add(x, y)
+    }
+
+    pub fn mul() -> u8 {
+        todo!()
+    }
+
+    pub fn div() -> u8 {
+        todo!()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn ripple_adder() {
+            let x = 13;
+            let y = 33;
+            assert!(add(x, y) == x + y);
+        }
+
+        #[test]
+        fn ripple_subtractor() {
+            let x = 33;
+            let y = 13;
+            assert!(sub(x, y) == x - y);
+        }
     }
 }
 

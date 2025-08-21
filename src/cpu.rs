@@ -1,9 +1,10 @@
 use crate::CYCLE_LIMIT;
-use crate::RAM_SIZE;
+use crate::bus::Bus;
 use crate::instructions::Instruction;
 use crate::instructions::arithmetic;
 use crate::memory::Addressable;
 use crate::memory::MemoryBlock;
+use crate::memory::memory_cycle;
 
 #[derive(Debug, Default)]
 pub struct Clock {
@@ -31,152 +32,190 @@ impl ProcFlags {
 }
 
 #[derive(Debug)]
+struct OperandBuffer<const N: usize, Data> {
+    operands: MemoryBlock<N, Option<Data>>,
+    required: usize,
+    fetched: usize,
+    reader_head: usize,
+}
+
+impl<const N: usize, Data> Default for OperandBuffer<N, Data>
+where
+    Data: Default + Copy,
+{
+    fn default() -> Self {
+        Self {
+            operands: MemoryBlock::default(),
+            required: Default::default(),
+            fetched: Default::default(),
+            reader_head: Default::default(),
+        }
+    }
+}
+
+impl<const N: usize, Data> OperandBuffer<N, Data>
+where
+    Data: Copy,
+{
+    fn push(&mut self, operand: Data) {
+        *self.operands.write(self.fetched) = Some(operand);
+        self.fetched += 1;
+    }
+
+    fn is_full(&mut self) -> bool {
+        self.fetched == self.required
+    }
+
+    fn read_next(&mut self) -> Data {
+        let out = self.operands.read(self.reader_head);
+        self.reader_head += 1;
+        out.expect("uninitialized operand - buffer too short")
+    }
+
+    fn reset(&mut self) {
+        self.fetched = Default::default();
+        self.required = Default::default();
+        self.reader_head = Default::default();
+    }
+}
+
+#[derive(Debug, Default)]
+enum ProcState {
+    #[default]
+    Idle,
+    FetchInstruction,
+    Decode,
+    Execute,
+    WriteBack,
+}
+
+#[derive(Debug, Default)]
 pub struct Processor<const R: usize> {
     program_counter: Pointer,
     stack_pointer: Pointer,
     registers: RegisterArray<R, Data>,
     flags: ProcFlags,
     halted: bool,
+    state: ProcState,
+    current_instruction: Instruction,
+    operand_buffer: OperandBuffer<R, Data>,
 }
 
 pub fn processor_run<const M: usize, const R: usize>(
     cpu: &mut Processor<R>,
     ram: &mut MemoryBlock<M, Data>,
+    bus: &mut Bus<Pointer, Data>,
     clock: &mut Clock,
 ) {
+    println!("\x1b[2J");
+
     while !cpu.halted && clock.tick < CYCLE_LIMIT {
-        cpu.step(ram);
+        println!("\x1b[0H");
+        dbg!(&ram);
+        dbg!(&cpu);
+        dbg!(&bus);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        memory_cycle(ram, bus);
+
+        println!("\x1b[0H");
+        dbg!(&ram);
+        dbg!(&cpu);
+        dbg!(&bus);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        processor_cycle(cpu, bus);
+
+        println!("\x1b[0H");
+        dbg!(&ram);
+        dbg!(&cpu);
+        dbg!(&bus);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
         clock.tick += 1;
     }
 }
 
-impl<const R: usize> Processor<R> {
-    fn step<Memory: Addressable<Pointer, Data = Data>>(&mut self, ram: &mut Memory) {
-        let instruction = self.fetch(ram).into();
-        self.execute(ram, instruction);
-    }
+fn processor_cycle<const R: usize>(cpu: &mut Processor<R>, bus: &mut Bus<Pointer, Data>) {
+    match cpu.state {
+        | ProcState::Idle => {
+            cpu.initiate_fetch(bus);
+            cpu.state = ProcState::FetchInstruction;
+        }
+        | ProcState::FetchInstruction => {
+            let Some(instruction) = bus.read_data()
+            else {
+                return;
+            };
 
-    fn fetch<Memory: Addressable<Pointer, Data = Data>>(&mut self, ram: &mut Memory) -> Data {
-        let output = ram.read(self.program_counter);
-        self.program_counter += 1;
-        output
-    }
+            cpu.current_instruction = instruction.into();
+            cpu.operand_buffer.reset();
+            cpu.operand_buffer.required = Instruction::operand_count(&instruction.into());
+            cpu.state = ProcState::Decode;
+        }
+        | ProcState::Decode => {
+            if let Some(operand) = bus.read_data() {
+                cpu.operand_buffer.push(operand);
+            }
 
-    fn execute<Memory: Addressable<Pointer, Data = Data>>(
-        &mut self,
-        ram: &mut Memory,
-        instruction: Instruction,
-    ) {
-        match instruction {
-            | Instruction::Halt => {
-                self.halted = true;
+            if !cpu.operand_buffer.is_full() {
+                cpu.initiate_fetch(bus);
             }
-            | Instruction::LoadImm => {
-                let dst = self.fetch(ram);
-                let val = self.fetch(ram);
-                *self.registers.write(dst) = val;
+            else {
+                cpu.state = ProcState::Execute;
             }
-            | Instruction::LoadMem => {
-                let dst = self.fetch(ram);
-                let adr = self.fetch(ram);
-                *self.registers.write(dst) = ram.read(Into::into(adr));
-            }
-            | Instruction::Copy => {
-                let dst = self.fetch(ram);
-                let rg1 = self.fetch(ram);
-                *self.registers.write(dst) = self.registers.read(rg1);
-            }
-            | Instruction::Add => {
-                let dst = self.fetch(ram);
-                let rg1 = self.fetch(ram);
-                let rg2 = self.fetch(ram);
-                let va1 = self.registers.read(rg1);
-                let va2 = self.registers.read(rg2);
-                *self.registers.write(dst) = arithmetic::add(va1, va2);
-            }
-            | Instruction::Sub => {
-                let dst = self.fetch(ram);
-                let rg1 = self.fetch(ram);
-                let rg2 = self.fetch(ram);
-                let va1 = self.registers.read(rg1);
-                let va2 = self.registers.read(rg2);
-                *self.registers.write(dst) = arithmetic::sub(va1, va2);
-            }
-            | Instruction::Mul => {
-                let dst = self.fetch(ram);
-                let rg1 = self.fetch(ram);
-                let rg2 = self.fetch(ram);
-                let va1 = self.registers.read(rg1);
-                let va2 = self.registers.read(rg2);
-                *self.registers.write(dst) = va1 * va2;
-            }
-            | Instruction::Div => {
-                let dst = self.fetch(ram);
-                let rg1 = self.fetch(ram);
-                let rg2 = self.fetch(ram);
-                let va1 = self.registers.read(rg1);
-                let va2 = self.registers.read(rg2);
-                *self.registers.write(dst) = va1 / va2;
-            }
-            | Instruction::Jump => {
-                let dst = self.fetch(ram);
-                self.program_counter = Into::into(dst);
-            }
-            | Instruction::JumpIf => {
-                let dst = self.fetch(ram);
-                if !self.flags.zero {
-                    self.program_counter = Into::into(dst);
-                }
-            }
-            | Instruction::Push => {
-                let rg1 = self.fetch(ram);
-                *ram.write(self.stack_pointer) = self.registers.read(rg1);
-                self.stack_pointer -= 1;
-            }
-            | Instruction::Pop => todo!(),
-            | Instruction::Compare => {
-                self.flags.reset();
-                let rg1 = self.fetch(ram);
-                let rg2 = self.fetch(ram);
-                let va1 = self.registers.read(rg1);
-                let va2 = self.registers.read(rg2);
-                match va1.cmp(&va2) {
-                    | std::cmp::Ordering::Equal => self.flags.zero = true,
-                    | std::cmp::Ordering::Greater => self.flags.great = true,
-                    | std::cmp::Ordering::Less => self.flags.less = true,
-                }
-            }
-            | Instruction::Increment => {
-                let rg1 = self.fetch(ram);
-                let val = self.registers.read(rg1);
-                *self.registers.write(rg1) = arithmetic::add(val, 1);
-            }
-            | Instruction::Decrement => {
-                let rg1 = self.fetch(ram);
-                let val = self.registers.read(rg1);
-                *self.registers.write(rg1) = arithmetic::sub(val, 1);
-            }
-            | Instruction::DebugRead => {
-                let dst = self.fetch(ram);
-                println!("value at register {dst}: {}", self.registers.read(dst));
-            }
-            | Instruction::DebugDumpReg => {
-                println!("registers: {:?}", self.registers);
-            }
-            | Instruction::Null => {}
-            | Instruction::EnumLength => panic!("this can only be explained by corrupted bytes"),
+        }
+        | ProcState::Execute => {
+            cpu.execute();
+            cpu.state = ProcState::WriteBack;
+        }
+        | ProcState::WriteBack => {
+            cpu.current_instruction = Instruction::Null;
+            cpu.state = ProcState::Idle;
         }
     }
 }
 
-impl<const R: usize> Default for Processor<R> {
-    fn default() -> Self {
-        Self {
-            program_counter: Default::default(),
-            stack_pointer: RAM_SIZE as u8 - 1,
-            registers: Default::default(),
-            flags: Default::default(),
-            halted: Default::default(),
+impl<const R: usize> Processor<R> {
+    fn initiate_fetch(&mut self, bus: &mut Bus<Pointer, Data>) {
+        bus.dispatch_read(self.program_counter);
+        self.program_counter += 1;
+    }
+
+    fn execute(&mut self) {
+        match self.current_instruction {
+            | Instruction::Halt => {
+                self.halted = true;
+            }
+            | Instruction::LoadImm => {
+                let dst = self.operand_buffer.read_next();
+                let val = self.operand_buffer.read_next();
+                *self.registers.write(dst) = val;
+            }
+            | Instruction::Add => {
+                let dst = self.operand_buffer.read_next();
+                let rg1 = self.operand_buffer.read_next();
+                let rg2 = self.operand_buffer.read_next();
+                let va1 = self.registers.read(rg1);
+                let va2 = self.registers.read(rg2);
+                *self.registers.write(dst) = arithmetic::add(va1, va2);
+            }
+            | Instruction::Null => todo!(),
+            | Instruction::LoadMem => todo!(),
+            | Instruction::Copy => todo!(),
+            | Instruction::Sub => todo!(),
+            | Instruction::Mul => todo!(),
+            | Instruction::Div => todo!(),
+            | Instruction::Jump => todo!(),
+            | Instruction::JumpIf => todo!(),
+            | Instruction::Push => todo!(),
+            | Instruction::Pop => todo!(),
+            | Instruction::Compare => todo!(),
+            | Instruction::Increment => todo!(),
+            | Instruction::Decrement => todo!(),
+            | Instruction::DebugRead => todo!(),
+            | Instruction::DebugDumpReg => todo!(),
+            | Instruction::EnumLength => todo!(),
         }
     }
 }
