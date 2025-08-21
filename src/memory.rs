@@ -7,8 +7,8 @@ pub trait Addressable<Address> {
 }
 
 #[derive(Debug)]
-pub struct MemoryBlock<const M: usize, Memory> {
-    memory: [Memory; M],
+pub struct MemoryBlock<const M: usize, Data> {
+    memory: [Data; M],
 }
 
 impl<const M: usize, Data> Default for MemoryBlock<M, Data>
