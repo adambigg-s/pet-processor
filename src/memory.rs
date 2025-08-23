@@ -1,5 +1,5 @@
 use crate::bus::Bus;
-use crate::bus::BusInstruction;
+use crate::bus::BusState;
 use crate::cpu::Data;
 use crate::cpu::Pointer;
 
@@ -72,18 +72,24 @@ where
 
 pub fn memory_cycle<const M: usize>(ram: &mut MemoryBlock<M, Data>, bus: &mut Bus<Pointer, Data>) {
     match bus.get_instruction() {
-        | BusInstruction::Read => {
-            let adr = bus.read_address().expect("bus wasn't dispatched with address");
-            let val = ram.read(adr);
-            bus.complete_read(val);
+        | BusState::Read => {
+            let bus_state = bus.complete_dispatch();
+            assert!(bus_state.address.is_some());
+            assert!(bus_state.data.is_none());
+            if let Some(address) = bus_state.address.take() {
+                let read_back = ram.read(address);
+                *bus_state.data = Some(read_back);
+            }
         }
-        | BusInstruction::Write => {
-            let adr = bus.read_address().expect("bus wasn't dispatched with address");
-            let val = bus.read_data().expect("bus wasn't dispatched with write data");
-            *ram.write(adr) = val;
-            bus.complete_write();
+        | BusState::Write => {
+            let bus_state = bus.complete_dispatch();
+            assert!(bus_state.address.is_some());
+            assert!(bus_state.data.is_some());
+            if let (Some(address), Some(data)) = (bus_state.address.take(), bus_state.data.take()) {
+                *ram.write(address) = data;
+            }
         }
-        | BusInstruction::Null => {}
+        | BusState::Null => {}
     }
 }
 
