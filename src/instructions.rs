@@ -1,5 +1,6 @@
 use crate::bus::Bus;
 use crate::cpu::Data;
+use crate::cpu::MicroState;
 use crate::cpu::Pointer;
 use crate::cpu::Processor;
 use crate::memory::Addressable;
@@ -9,8 +10,9 @@ use crate::memory::Addressable;
 #[allow(dead_code)]
 pub enum Instruction {
     #[default]
-    Halt,
     Null,
+    Halt,
+    Ret,
     LoadImm,    // dstr, valu
     LoadMem,    // dstr, addr
     Copy,       // dstr, reg1
@@ -26,23 +28,6 @@ pub enum Instruction {
     Increment,  // dstr
     Decrement,  // dstr
     EnumLength,
-}
-
-impl Instruction {
-    pub fn operand_count(&self) -> usize {
-        match self {
-            | Instruction::Halt | Instruction::Null => 0,
-            | Instruction::Jump
-            | Instruction::JumpIfZero
-            | Instruction::Push
-            | Instruction::Pop
-            | Instruction::Increment
-            | Instruction::Decrement => 1,
-            | Instruction::LoadImm | Instruction::LoadMem | Instruction::Copy | Instruction::Compare => 2,
-            | Instruction::Add | Instruction::Sub | Instruction::Mul | Instruction::Div => 3,
-            | _ => panic!("this can only be explained by corrupted bytes\ndecoded value: {self:?}"),
-        }
-    }
 }
 
 impl From<u8> for Instruction {
@@ -61,18 +46,70 @@ impl From<Instruction> for u8 {
     }
 }
 
+impl Instruction {
+    pub fn operand_count(&self) -> usize {
+        match self {
+            | Instruction::Jump
+            | Instruction::JumpIfZero
+            | Instruction::Push
+            | Instruction::Pop
+            | Instruction::Increment
+            | Instruction::Decrement => 1,
+            | Instruction::Halt | Instruction::Null | Instruction::Ret => 0,
+            | Instruction::Add | Instruction::Sub | Instruction::Mul | Instruction::Div => 3,
+            | Instruction::LoadImm | Instruction::LoadMem | Instruction::Copy | Instruction::Compare => 2,
+            | _ => panic!("this can only be explained by corrupted bytes\ndecoded value: {self:?}"),
+        }
+    }
+}
+
 pub fn halt<const R: usize>(cpu: &mut Processor<R>) {
     cpu.halted = true;
+    cpu.flags.complete = true;
 }
 
 pub fn load_imm<const R: usize>(cpu: &mut Processor<R>) {
     let dst = cpu.operand_buffer.read_next();
     let val = cpu.operand_buffer.read_next();
     *cpu.registers.write(dst) = val;
+    cpu.flags.complete = true;
+}
+
+pub fn ret<const R: usize>(cpu: &mut Processor<R>, bus: &mut Bus<Pointer, Data>) {
+    match cpu.microstate {
+        | MicroState(0) => {
+            assert!(bus.is_avaliable());
+            cpu.stack_pointer += 1;
+            bus.dispatch_read(cpu.stack_pointer);
+            cpu.microstate.increment();
+        }
+        | MicroState(1) => {
+            if let Some(data) = bus.read_data() {
+                cpu.program_counter = data as Pointer;
+                cpu.microstate.increment();
+            }
+        }
+        | _ => cpu.flags.complete = true,
+    }
 }
 
 pub fn load_mem<const R: usize>(cpu: &mut Processor<R>, bus: &mut Bus<Pointer, Data>) {
-    todo!()
+    let dst = cpu.operand_buffer.read_next();
+    let adr = cpu.operand_buffer.read_next();
+    match cpu.microstate {
+        | MicroState(0) => {
+            assert!(bus.is_avaliable());
+            bus.dispatch_read(adr as Pointer);
+            cpu.microstate.increment();
+        }
+        | MicroState(1) => {
+            if let Some(data) = bus.read_data() {
+                *cpu.registers.write(dst) = data;
+                cpu.microstate.increment();
+            }
+        }
+        | _ => cpu.flags.complete = true,
+    }
 }
 
 pub fn copy<const R: usize>(cpu: &mut Processor<R>) {
@@ -80,6 +117,7 @@ pub fn copy<const R: usize>(cpu: &mut Processor<R>) {
     let rg1 = cpu.operand_buffer.read_next();
     let val = cpu.registers.read(rg1);
     *cpu.registers.write(dst) = val;
+    cpu.flags.complete = true;
 }
 
 pub fn add<const R: usize>(cpu: &mut Processor<R>) {
@@ -89,6 +127,7 @@ pub fn add<const R: usize>(cpu: &mut Processor<R>) {
     let va1 = cpu.registers.read(rg1);
     let va2 = cpu.registers.read(rg2);
     *cpu.registers.write(dst) = arithmetic::add(va1, va2);
+    cpu.flags.complete = true;
 }
 
 pub fn sub<const R: usize>(cpu: &mut Processor<R>) {
@@ -98,6 +137,7 @@ pub fn sub<const R: usize>(cpu: &mut Processor<R>) {
     let va1 = cpu.registers.read(rg1);
     let va2 = cpu.registers.read(rg2);
     *cpu.registers.write(dst) = arithmetic::sub(va1, va2);
+    cpu.flags.complete = true;
 }
 
 pub fn mul<const R: usize>(cpu: &mut Processor<R>) {
@@ -107,6 +147,7 @@ pub fn mul<const R: usize>(cpu: &mut Processor<R>) {
     let va1 = cpu.registers.read(rg1);
     let va2 = cpu.registers.read(rg2);
     *cpu.registers.write(dst) = arithmetic::mul(va1, va2);
+    cpu.flags.complete = true;
 }
 
 pub fn div<const R: usize>(cpu: &mut Processor<R>) {
@@ -116,18 +157,21 @@ pub fn div<const R: usize>(cpu: &mut Processor<R>) {
     let va1 = cpu.registers.read(rg1);
     let va2 = cpu.registers.read(rg2);
     *cpu.registers.write(dst) = arithmetic::div(va1, va2);
+    cpu.flags.complete = true;
 }
 
 pub fn jump<const R: usize>(cpu: &mut Processor<R>) {
     let adr = cpu.operand_buffer.read_next();
-    cpu.program_counter = adr;
+    cpu.program_counter = adr as Pointer;
+    cpu.flags.complete = true;
 }
 
 pub fn jump_if_zero<const R: usize>(cpu: &mut Processor<R>) {
     let adr = cpu.operand_buffer.read_next();
     if !cpu.flags.zero {
-        cpu.program_counter = adr;
+        cpu.program_counter = adr as Pointer;
     }
+    cpu.flags.complete = true;
 }
 
 pub fn push<const R: usize>(cpu: &mut Processor<R>, bus: &mut Bus<Pointer, Data>) {
@@ -136,10 +180,26 @@ pub fn push<const R: usize>(cpu: &mut Processor<R>, bus: &mut Bus<Pointer, Data>
     assert!(bus.is_avaliable());
     bus.dispatch_write(cpu.stack_pointer, val);
     cpu.stack_pointer -= 1;
+    cpu.flags.complete = true;
 }
 
 pub fn pop<const R: usize>(cpu: &mut Processor<R>, bus: &mut Bus<Pointer, Data>) {
-    todo!()
+    let dst = cpu.operand_buffer.read_next();
+    match cpu.microstate {
+        | MicroState(0) => {
+            assert!(bus.is_avaliable());
+            cpu.stack_pointer += 1;
+            bus.dispatch_read(cpu.stack_pointer);
+            cpu.microstate.increment();
+        }
+        | MicroState(1) => {
+            if let Some(data) = bus.read_data() {
+                *cpu.registers.write(dst) = data;
+                cpu.microstate.increment();
+            }
+        }
+        | _ => cpu.flags.complete = true,
+    }
 }
 
 pub fn compare<const R: usize>(cpu: &mut Processor<R>) {
@@ -147,24 +207,27 @@ pub fn compare<const R: usize>(cpu: &mut Processor<R>) {
     let rg2 = cpu.operand_buffer.read_next();
     let va1 = cpu.registers.read(rg1);
     let va2 = cpu.registers.read(rg2);
-    cpu.flags.reset();
+    cpu.flags.reset_logical();
     match logic::compare(va1, va2) {
         | logic::Ordering::Equal => cpu.flags.zero = true,
         | logic::Ordering::Less => cpu.flags.less = true,
         | logic::Ordering::Great => cpu.flags.great = true,
     }
+    cpu.flags.complete = true;
 }
 
 pub fn increment<const R: usize>(cpu: &mut Processor<R>) {
     let dst = cpu.operand_buffer.read_next();
     let val = cpu.registers.read(dst);
     *cpu.registers.write(dst) = arithmetic::add(val, 1);
+    cpu.flags.complete = true;
 }
 
 pub fn decrement<const R: usize>(cpu: &mut Processor<R>) {
     let dst = cpu.operand_buffer.read_next();
     let val = cpu.registers.read(dst);
     *cpu.registers.write(dst) = arithmetic::sub(val, 1);
+    cpu.flags.complete = true;
 }
 
 pub mod logic {
@@ -190,7 +253,6 @@ pub mod logic {
             }
             mask >>= 1;
         }
-
         out
     }
 
@@ -286,6 +348,14 @@ pub mod arithmetic {
             let x = 37;
             let y = 12;
             assert!(div(x, y) == x / y);
+        }
+
+        #[test]
+        #[should_panic]
+        fn div_panic() {
+            let x = 10;
+            let y = 0;
+            assert!(div(x, y) == u8::MAX);
         }
     }
 }

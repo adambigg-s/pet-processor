@@ -40,17 +40,6 @@ mod tests {
 
     use super::*;
 
-    use std::fmt::Debug;
-
-    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-    struct _FooBarStruct;
-
-    trait _FooBarTrait<T>
-    where
-        T: Debug + Default + Clone + Copy + Sized,
-    {
-    }
-
     #[test]
     fn label() {
         let mut mem = MemoryBlock::<10, u8>::default();

@@ -1,7 +1,6 @@
 use crate::bus::Bus;
 use crate::bus::BusState;
-use crate::cpu::Data;
-use crate::cpu::Pointer;
+use crate::bus::Cycle;
 
 pub trait Addressable<Address> {
     type Data;
@@ -70,26 +69,32 @@ where
     }
 }
 
-pub fn memory_cycle<const M: usize>(ram: &mut MemoryBlock<M, Data>, bus: &mut Bus<Pointer, Data>) {
-    match bus.get_instruction() {
-        | BusState::Read => {
-            let bus_state = bus.complete_dispatch();
-            assert!(bus_state.address.is_some());
-            assert!(bus_state.data.is_none());
-            if let Some(address) = bus_state.address.take() {
-                let read_back = ram.read(address);
-                *bus_state.data = Some(read_back);
+impl<const M: usize, Address, Data> Cycle<Address, Data> for MemoryBlock<M, Data>
+where
+    Address: Into<usize>,
+    Data: Copy,
+{
+    fn cycle(&mut self, bus: &mut Bus<Address, Data>) {
+        match bus.get_instruction() {
+            | BusState::Read => {
+                let bus_state = bus.complete_dispatch();
+                assert!(bus_state.address.is_some());
+                assert!(bus_state.data.is_none());
+                if let Some(address) = bus_state.address.take() {
+                    let read_back = self.read(address);
+                    *bus_state.data = Some(read_back);
+                }
             }
-        }
-        | BusState::Write => {
-            let bus_state = bus.complete_dispatch();
-            assert!(bus_state.address.is_some());
-            assert!(bus_state.data.is_some());
-            if let (Some(address), Some(data)) = (bus_state.address.take(), bus_state.data.take()) {
-                *ram.write(address) = data;
+            | BusState::Write => {
+                let bus_state = bus.complete_dispatch();
+                assert!(bus_state.address.is_some());
+                assert!(bus_state.data.is_some());
+                if let (Some(address), Some(data)) = (bus_state.address.take(), bus_state.data.take()) {
+                    *self.write(address) = data;
+                }
             }
+            | BusState::Null => {}
         }
-        | BusState::Null => {}
     }
 }
 

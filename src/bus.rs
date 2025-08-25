@@ -1,3 +1,7 @@
+pub trait Cycle<Address, Data> {
+    fn cycle(&mut self, bus: &mut Bus<Address, Data>);
+}
+
 pub struct BusResponse<'d, Address, Data> {
     pub address: &'d mut Option<Address>,
     pub data: &'d mut Option<Data>,
@@ -64,7 +68,7 @@ impl<Address, Data> Bus<Address, Data> {
 
 #[cfg(test)]
 mod tests {
-    use crate::memory::{Addressable, MemoryBlock, memory_cycle};
+    use crate::memory::{Addressable, MemoryBlock};
 
     use super::*;
 
@@ -74,7 +78,7 @@ mod tests {
         let mut bus = Bus::<u8, u8>::default();
         *ram.write(3_u8) = 33;
         bus.dispatch_read(3);
-        memory_cycle(&mut ram, &mut bus);
+        ram.cycle(&mut bus);
         assert!(bus.instruction == BusState::Null);
         assert!(bus.data == Some(33));
     }
@@ -84,7 +88,7 @@ mod tests {
         let mut ram = MemoryBlock::<8, u8>::default();
         let mut bus = Bus::<u8, u8>::default();
         bus.dispatch_write(3, 33);
-        memory_cycle(&mut ram, &mut bus);
+        ram.cycle(&mut bus);
         assert!(bus.instruction == BusState::Null);
         assert!(ram.read(3_u8) == 33);
     }
